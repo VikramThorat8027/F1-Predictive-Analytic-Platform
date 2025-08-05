@@ -86,20 +86,21 @@ Edit
 python run_dashboard.py
 
 
-📁 Project Structure
-
-f1-predictive-analytics/
-│
-├── f1_web_app.py             # Flask application
-├── f1_analytics_platform.py  # Streamlit dashboard
-├── dash_f1_dashboard.py      # Dash dashboard
-├── run_dashboard.py          # Dashboard launcher
-├── launch_web_app.py         # Web app launcher
-├── dataset.csv               # F1 driver dataset
-├── templates/                # HTML templates for Flask
-│   ├── index.html
-│   └── dashboard.html
-└── requirements.txt          # Python dependencies
+📂 Project Structure
+```
+├── dash_f1_dashboard.py
+├── data_preprocessing.py
+├── dataset.csv
+├── debug_web_app.py
+├── f1_analytics_platform.py
+├── f1_web_app.py
+├── launch_web_app.py
+├── requirements.txt
+├── run_dashboard.py
+├── simple_test.py
+├── templates/
+│   ├── dashboard.html
+│   └── index.html
 📡 API Endpoints (Flask)
 Method	Endpoint	Description
 GET	/api/overview_stats	Summary statistics of all drivers
