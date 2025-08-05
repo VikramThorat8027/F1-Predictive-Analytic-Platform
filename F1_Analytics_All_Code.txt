@@ -1,0 +1,799 @@
+# F1 Predictive Analytics Platform - All Code
+
+---
+
+## f1_web_app.py
+```
+"""
+F1 Predictive Analytics Platform - Web Application
+A comprehensive Flask web app with modern UI and interactive dashboards
+"""
+
+from flask import Flask, render_template, request, jsonify, redirect, url_for
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+import plotly.utils
+import json
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error, r2_score
+import warnings
+import re
+warnings.filterwarnings('ignore')
+
+app = Flask(__name__)
+app.secret_key = 'f1_analytics_platform_2024'
+
+# Global data storage
+df = None
+model = None
+
+def clean_numeric_column(series):
+    """Clean numeric columns by removing non-numeric characters and converting to float"""
+    try:
+        # Remove any text in parentheses and other non-numeric characters
+        cleaned = series.astype(str).str.replace(r'\([^)]*\)', '', regex=True)
+        cleaned = cleaned.str.replace(r'[^\d.+]', '', regex=True)
+        cleaned = cleaned.str.replace('+', '')
+        cleaned = cleaned.replace('', np.nan)
+        cleaned = cleaned.replace('nan', np.nan)
+        return pd.to_numeric(cleaned, errors='coerce')
+    except Exception as e:
+        print(f"Error cleaning column: {e}")
+        return pd.to_numeric(series, errors='coerce')
+
+def load_and_preprocess_data():
+    """Load and preprocess F1 driver data"""
+    global df
+    try:
+        # Load the dataset
+        df = pd.read_csv("dataset.csv")
+        print(f"Loaded {len(df)} drivers")
+        
+        # Clean numeric columns
+        numeric_columns = [
+            'CareerRacesEntered', 'CareerWins', 'CareerPodiums', 
+            'CareerPoints', 'CareerPolePositions', 'CareerFastestLaps',
+            'CareerChampionships'
+        ]
+        
+        for col in numeric_columns:
+            if col in df.columns:
+                df[col] = clean_numeric_column(df[col])
+                print(f"Cleaned {col}: {df[col].isnull().sum()} missing values")
+        
+        # Calculate additional metrics only for valid data
+        valid_mask = df['CareerRacesEntered'].notna() & (df['CareerRacesEntered'] > 0)
+        
+        df['WinRate'] = 0.0
+        df['PodiumRate'] = 0.0
+        df['PointsPerRace'] = 0.0
+        
+        # Calculate rates only for valid entries
+        df.loc[valid_mask, 'WinRate'] = (
+            df.loc[valid_mask, 'CareerWins'] / df.loc[valid_mask, 'CareerRacesEntered'] * 100
+        ).fillna(0)
+        
+        df.loc[valid_mask, 'PodiumRate'] = (
+            df.loc[valid_mask, 'CareerPodiums'] / df.loc[valid_mask, 'CareerRacesEntered'] * 100
+        ).fillna(0)
+        
+        df.loc[valid_mask, 'PointsPerRace'] = (
+            df.loc[valid_mask, 'CareerPoints'] / df.loc[valid_mask, 'CareerRacesEntered']
+        ).fillna(0)
+        
+        # Clip rates to reasonable values
+        df['WinRate'] = df['WinRate'].clip(upper=100)
+        df['PodiumRate'] = df['PodiumRate'].clip(upper=100)
+        
+        print("Data preprocessing completed successfully")
+        return True
+    except Exception as e:
+        print(f"Error loading data: {e}")
+        return False
+
+def train_predictive_model():
+    """Train the predictive model"""
+    global model, df
+    try:
+        # Prepare data for modeling
+        model_df = df.copy()
+        model_df['Experience'] = model_df['CareerRacesEntered']
+        model_df['Success_Rate'] = model_df['WinRate']
+        model_df['Consistency'] = model_df['PodiumRate']
+        
+        features = ['Experience', 'Success_Rate', 'Consistency', 'CareerPolePositions', 'CareerFastestLaps']
+        target = 'CareerPoints'
+        
+        # Remove rows with missing values
+        model_df = model_df.dropna(subset=features + [target])
+        
+        if len(model_df) < 10:
+            print("Not enough data for training model")
+            return False
+        
+        X = model_df[features]
+        y = model_df[target]
+        
+        # Train model
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        model = RandomForestRegressor(n_estimators=100, random_state=42)
+        model.fit(X_train, y_train)
+        
+        print("Model trained successfully")
+        return True
+    except Exception as e:
+        print(f"Error training model: {e}")
+        return False
+
+# Initialize data and model
+load_and_preprocess_data()
+train_predictive_model()
+
+@app.route('/')
+def index():
+    """Main landing page"""
+    return render_template('index.html')
+
+@app.route('/dashboard')
+def dashboard():
+    """Main dashboard page"""
+    return render_template('dashboard.html')
+
+@app.route('/api/overview_stats')
+def overview_stats():
+    """API endpoint for overview statistics"""
+    if df is None:
+        return jsonify({'error': 'Data not loaded'})
+    
+    try:
+        stats = {
+            'total_drivers': len(df),
+            'avg_wins': float(df['CareerWins'].mean()) if df['CareerWins'].notna().any() else 0,
+            'avg_championships': float(df['CareerChampionships'].mean()) if df['CareerChampionships'].notna().any() else 0,
+            'avg_points': float(df['CareerPoints'].mean()) if df['CareerPoints'].notna().any() else 0,
+            'total_wins': float(df['CareerWins'].sum()) if df['CareerWins'].notna().any() else 0,
+            'total_championships': float(df['CareerChampionships'].sum()) if df['CareerChampionships'].notna().any() else 0
+        }
+        
+        return jsonify(stats)
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+@app.route('/api/top_drivers')
+def top_drivers():
+    """API endpoint for top drivers data"""
+    if df is None:
+        return jsonify({'error': 'Data not loaded'})
+    
+    try:
+        # Filter out invalid data
+        valid_df = df[df['CareerWins'].notna() & (df['CareerWins'] > 0)]
+        if len(valid_df) == 0:
+            return jsonify([])
+        
+        top_winners = valid_df.nlargest(10, 'CareerWins')[['DriverName', 'CareerWins', 'CareerChampionships', 'WinRate']]
+        return jsonify(top_winners.to_dict('records'))
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+@app.route('/api/win_rate_distribution')
+def win_rate_distribution():
+    """API endpoint for win rate distribution chart"""
+    if df is None:
+        return jsonify({'error': 'Data not loaded'})
+    
+    try:
+        # Filter valid win rates
+        valid_df = df[df['WinRate'].notna() & (df['WinRate'] > 0)]
+        if len(valid_df) == 0:
+            return jsonify({'error': 'No valid win rate data'})
+        
+        fig = px.histogram(valid_df, x='WinRate', nbins=20, title="Distribution of Win Rates")
+        return jsonify(json.loads(fig.to_json()))
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+@app.route('/api/championship_analysis')
+def championship_analysis():
+    """API endpoint for championship analysis"""
+    if df is None:
+        return jsonify({'error': 'Data not loaded'})
+    
+    try:
+        # Filter valid championship data
+        valid_df = df[df['CareerChampionships'].notna() & (df['CareerChampionships'] > 0)]
+        if len(valid_df) == 0:
+            return jsonify({'error': 'No valid championship data'})
+        
+        champions = valid_df.nlargest(10, 'CareerChampionships')
+        fig = px.bar(champions, x='DriverName', y='CareerChampionships', title="Drivers with Most Championships")
+        fig.update_layout(xaxis_tickangle=-45)
+        return jsonify(json.loads(fig.to_json()))
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+@app.route('/api/nationality_analysis')
+def nationality_analysis():
+    """API endpoint for nationality analysis"""
+    if df is None:
+        return jsonify({'error': 'Data not loaded'})
+    
+    try:
+        # Filter valid data
+        valid_df = df[df['CareerWins'].notna() & df['CareerChampionships'].notna()]
+        if len(valid_df) == 0:
+            return jsonify({'error': 'No valid nationality data'})
+        
+        nationality_stats = valid_df.groupby('DriverNationality').agg({
+            'CareerWins': 'sum',
+            'CareerChampionships': 'sum',
+            'DriverName': 'count'
+        }).rename(columns={'DriverName': 'DriverCount'})
+        
+        fig = px.scatter(
+            nationality_stats.reset_index(),
+            x='CareerWins',
+            y='CareerChampionships',
+            size='DriverCount',
+            hover_data=['DriverNationality'],
+            title="Nationality Performance Analysis"
+        )
+        return jsonify(json.loads(fig.to_json()))
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+@app.route('/api/driver_list')
+def driver_list():
+    """API endpoint for driver list"""
+    if df is None:
+        return jsonify({'error': 'Data not loaded'})
+    
+    try:
+        drivers = df[['DriverName', 'DriverNationality', 'CareerWins', 'CareerChampionships']].sort_values('DriverName')
+        return jsonify(drivers.to_dict('records'))
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+@app.route('/api/driver_details/<driver_name>')
+def driver_details(driver_name):
+    """API endpoint for specific driver details"""
+    if df is None:
+        return jsonify({'error': 'Data not loaded'})
+    
+    try:
+        driver_data = df[df['DriverName'] == driver_name]
+        if len(driver_data) == 0:
+            return jsonify({'error': 'Driver not found'})
+        
+        driver = driver_data.iloc[0]
+        details = {
+            'name': driver['DriverName'],
+            'nationality': driver['DriverNationality'],
+            'career_wins': float(driver['CareerWins']) if pd.notna(driver['CareerWins']) else 0,
+            'career_podiums': float(driver['CareerPodiums']) if pd.notna(driver['CareerPodiums']) else 0,
+            'career_points': float(driver['CareerPoints']) if pd.notna(driver['CareerPoints']) else 0,
+            'career_championships': float(driver['CareerChampionships']) if pd.notna(driver['CareerChampionships']) else 0,
+            'career_races': float(driver['CareerRacesEntered']) if pd.notna(driver['CareerRacesEntered']) else 0,
+            'win_rate': float(driver['WinRate']) if pd.notna(driver['WinRate']) else 0,
+            'podium_rate': float(driver['PodiumRate']) if pd.notna(driver['PodiumRate']) else 0,
+            'pole_positions': float(driver['CareerPolePositions']) if pd.notna(driver['CareerPolePositions']) else 0,
+            'fastest_laps': float(driver['CareerFastestLaps']) if pd.notna(driver['CareerFastestLaps']) else 0
+        }
+        
+        return jsonify(details)
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+@app.route('/api/predict', methods=['POST'])
+def predict():
+    """API endpoint for making predictions"""
+    if model is None:
+        return jsonify({'error': 'Model not trained'})
+    
+    try:
+        data = request.get_json()
+        experience = float(data['experience'])
+        success_rate = float(data['success_rate'])
+        consistency = float(data['consistency'])
+        pole_positions = float(data['pole_positions'])
+        fastest_laps = float(data['fastest_laps'])
+        
+        # Make prediction
+        prediction_input = np.array([[experience, success_rate, consistency, pole_positions, fastest_laps]])
+        predicted_points = model.predict(prediction_input)[0]
+        
+        confidence_range = predicted_points * 0.2
+        
+        result = {
+            'predicted_points': float(predicted_points),
+            'confidence_lower': float(predicted_points - confidence_range),
+            'confidence_upper': float(predicted_points + confidence_range)
+        }
+        
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+@app.route('/api/correlation_matrix')
+def correlation_matrix():
+    """API endpoint for correlation matrix"""
+    if df is None:
+        return jsonify({'error': 'Data not loaded'})
+    
+    try:
+        numeric_cols = ['CareerWins', 'CareerPodiums', 'CareerPoints', 'CareerPolePositions', 
+                       'CareerFastestLaps', 'CareerChampionships', 'WinRate', 'PodiumRate']
+        
+        # Filter valid numeric data
+        valid_df = df[numeric_cols].dropna()
+        if len(valid_df) == 0:
+            return jsonify({'error': 'No valid numeric data for correlation'})
+        
+        correlation_matrix = valid_df.corr()
+        
+        fig = px.imshow(
+            correlation_matrix,
+            title="Correlation Matrix",
+            color_continuous_scale='RdBu',
+            aspect='auto'
+        )
+        return jsonify(json.loads(fig.to_json()))
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+@app.route('/api/performance_clustering')
+def performance_clustering():
+    """API endpoint for performance clustering"""
+    if df is None:
+        return jsonify({'error': 'Data not loaded'})
+    
+    try:
+        cluster_features = ['WinRate', 'PodiumRate', 'CareerChampionships', 'PointsPerRace']
+        cluster_df = df[cluster_features].dropna()
+        
+        if len(cluster_df) == 0:
+            return jsonify({'error': 'No valid data for clustering'})
+        
+        # Simple clustering based on performance tiers
+        cluster_df['Performance_Tier'] = pd.cut(
+            cluster_df['WinRate'],
+            bins=[0, 2, 5, 10, 100],
+            labels=['Rookie', 'Established', 'Elite', 'Legend']
+        )
+        
+        fig = px.scatter(
+            cluster_df,
+            x='WinRate',
+            y='PodiumRate',
+            color='Performance_Tier',
+            size='CareerChampionships',
+            hover_data=['PointsPerRace'],
+            title="Driver Performance Clustering"
+        )
+        return jsonify(json.loads(fig.to_json()))
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=5000) 
+```
+
+---
+
+## templates/index.html
+```
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🏎️ F1 Predictive Analytics Platform</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        :root {
+            --primary-color: #e10600;
+            --secondary-color: #1e1e1e;
+            --accent-color: #ffd700;
+            --text-light: #ffffff;
+            --text-dark: #333333;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1e1e1e 0%, #2d2d2d 100%);
+            color: var(--text-light);
+            margin: 0;
+            padding: 0;
+        }
+        
+        .hero-section {
+            background: linear-gradient(135deg, var(--primary-color) 0%, #ff4444 100%);
+            padding: 100px 0;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .hero-section::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><pattern id="grid" width="10" height="10" patternUnits="userSpaceOnUse"><path d="M 10 0 L 0 0 0 10" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="0.5"/></pattern></defs><rect width="100" height="100" fill="url(%23grid)"/></svg>');
+            opacity: 0.3;
+        }
+        
+        .hero-content {
+            position: relative;
+            z-index: 2;
+        }
+        
+        .hero-title {
+            font-size: 4rem;
+            font-weight: bold;
+            margin-bottom: 20px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+        
+        .hero-subtitle {
+            font-size: 1.5rem;
+            margin-bottom: 40px;
+            opacity: 0.9;
+        }
+        
+        .cta-button {
+            background: var(--accent-color);
+            color: var(--text-dark);
+            padding: 15px 40px;
+            border: none;
+            border-radius: 50px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(255, 215, 0, 0.3);
+        }
+        
+        .cta-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(255, 215, 0, 0.4);
+            color: var(--text-dark);
+        }
+        
+        .features-section {
+            padding: 80px 0;
+            background: var(--secondary-color);
+        }
+        
+        .feature-card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+            padding: 30px;
+            margin: 20px 0;
+            text-align: center;
+            transition: all 0.3s ease;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .feature-card:hover {
+            transform: translateY(-5px);
+            background: rgba(255, 255, 255, 0.1);
+            border-color: var(--primary-color);
+        }
+        
+        .feature-icon {
+            font-size: 3rem;
+            color: var(--accent-color);
+            margin-bottom: 20px;
+        }
+        
+        .feature-title {
+            font-size: 1.5rem;
+            font-weight: bold;
+            margin-bottom: 15px;
+        }
+        
+        .feature-description {
+            color: rgba(255, 255, 255, 0.8);
+            line-height: 1.6;
+        }
+        
+        .stats-section {
+            padding: 80px 0;
+            background: linear-gradient(135deg, #2d2d2d 0%, #1e1e1e 100%);
+        }
+        
+        .stat-card {
+            background: rgba(225, 6, 0, 0.1);
+            border-radius: 15px;
+            padding: 30px;
+            text-align: center;
+            border: 1px solid rgba(225, 6, 0, 0.3);
+        }
+        
+        .stat-number {
+            font-size: 3rem;
+            font-weight: bold;
+            color: var(--accent-color);
+        }
+        
+        .stat-label {
+            font-size: 1.1rem;
+            color: rgba(255, 255, 255, 0.8);
+            margin-top: 10px;
+        }
+        
+        .navbar {
+            background: rgba(30, 30, 30, 0.95) !important;
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .navbar-brand {
+            font-weight: bold;
+            font-size: 1.5rem;
+        }
+        
+        .nav-link {
+            color: var(--text-light) !important;
+            transition: color 0.3s ease;
+        }
+        
+        .nav-link:hover {
+            color: var(--accent-color) !important;
+        }
+        
+        .footer {
+            background: var(--secondary-color);
+            padding: 40px 0;
+            text-align: center;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+        
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid var(--accent-color);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar navbar-expand-lg navbar-dark fixed-top">
+        <div class="container">
+            <a class="navbar-brand" href="#">
+                <i class="fas fa-car"></i> F1 Analytics Platform
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="#features">Features</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#stats">Statistics</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/dashboard">Dashboard</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero-section">
+        <div class="container">
+            <div class="hero-content">
+                <h1 class="hero-title">🏎️ F1 Predictive Analytics Platform</h1>
+                <p class="hero-subtitle">Advanced analytics and predictive modeling for Formula 1 driver performance</p>
+                <a href="/dashboard" class="cta-button">
+                    <i class="fas fa-chart-line"></i> Launch Dashboard
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section id="features" class="features-section">
+        <div class="container">
+            <div class="row text-center mb-5">
+                <div class="col-12">
+                    <h2 class="display-4 mb-4">Platform Features</h2>
+                    <p class="lead">Comprehensive analytics and insights for F1 performance analysis</p>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-lg-3 col-md-6">
+                    <div class="feature-card">
+                        <div class="feature-icon">
+                            <i class="fas fa-chart-bar"></i>
+                        </div>
+                        <h3 class="feature-title">Performance Analytics</h3>
+                        <p class="feature-description">
+                            Deep dive into driver statistics, win rates, and career progression with interactive visualizations.
+                        </p>
+                    </div>
+                </div>
+                <div class="col-lg-3 col-md-6">
+                    <div class="feature-card">
+                        <div class="feature-icon">
+                            <i class="fas fa-brain"></i>
+                        </div>
+                        <h3 class="feature-title">Predictive Models</h3>
+                        <p class="feature-description">
+                            Machine learning models to predict career outcomes and driver performance potential.
+                        </p>
+                    </div>
+                </div>
+                <div class="col-lg-3 col-md-6">
+                    <div class="feature-card">
+                        <div class="feature-icon">
+                            <i class="fas fa-users"></i>
+                        </div>
+                        <h3 class="feature-title">Driver Comparison</h3>
+                        <p class="feature-description">
+                            Compare drivers across multiple metrics and analyze performance patterns.
+                        </p>
+                    </div>
+                </div>
+                <div class="col-lg-3 col-md-6">
+                    <div class="feature-card">
+                        <div class="feature-icon">
+                            <i class="fas fa-globe"></i>
+                        </div>
+                        <h3 class="feature-title">Global Analysis</h3>
+                        <p class="feature-description">
+                            Analyze performance by nationality and discover regional trends in F1.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Statistics Section -->
+    <section id="stats" class="stats-section">
+        <div class="container">
+            <div class="row text-center mb-5">
+                <div class="col-12">
+                    <h2 class="display-4 mb-4">Platform Statistics</h2>
+                    <p class="lead">Real-time data from our comprehensive F1 database</p>
+                </div>
+            </div>
+            <div class="row" id="stats-container">
+                <div class="col-lg-3 col-md-6">
+                    <div class="stat-card">
+                        <div class="stat-number" id="total-drivers">-</div>
+                        <div class="stat-label">Total Drivers</div>
+                    </div>
+                </div>
+                <div class="col-lg-3 col-md-6">
+                    <div class="stat-card">
+                        <div class="stat-number" id="total-wins">-</div>
+                        <div class="stat-label">Total Wins</div>
+                    </div>
+                </div>
+                <div class="col-lg-3 col-md-6">
+                    <div class="stat-card">
+                        <div class="stat-number" id="total-championships">-</div>
+                        <div class="stat-label">Championships</div>
+                    </div>
+                </div>
+                <div class="col-lg-3 col-md-6">
+                    <div class="stat-card">
+                        <div class="stat-number" id="avg-points">-</div>
+                        <div class="stat-label">Avg Points</div>
+                    </div>
+                </div>
+            </div>
+            <div class="loading" id="stats-loading">
+                <div class="spinner"></div>
+                <p class="mt-3">Loading statistics...</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="row">
+                <div class="col-12">
+                    <h5>🏎️ F1 Predictive Analytics Platform</h5>
+                    <p>Advanced analytics and insights for Formula 1 performance analysis</p>
+                    <div class="mt-3">
+                        <a href="/dashboard" class="btn btn-outline-light me-3">
+                            <i class="fas fa-chart-line"></i> Launch Dashboard
+                        </a>
+                        <a href="#features" class="btn btn-outline-light">
+                            <i class="fas fa-info-circle"></i> Learn More
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Load statistics on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            loadStatistics();
+        });
+
+        function loadStatistics() {
+            const loading = document.getElementById('stats-loading');
+            const statsContainer = document.getElementById('stats-container');
+            
+            loading.style.display = 'block';
+            statsContainer.style.display = 'none';
+            
+            fetch('/api/overview_stats')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        console.error('Error loading stats:', data.error);
+                        return;
+                    }
+                    
+                    document.getElementById('total-drivers').textContent = data.total_drivers;
+                    document.getElementById('total-wins').textContent = Math.round(data.total_wins);
+                    document.getElementById('total-championships').textContent = Math.round(data.total_championships);
+                    document.getElementById('avg-points').textContent = Math.round(data.avg_points);
+                    
+                    loading.style.display = 'none';
+                    statsContainer.style.display = 'block';
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    loading.style.display = 'none';
+                    statsContainer.style.display = 'block';
+                });
+        }
+
+        // Smooth scrolling for navigation links
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'start'
+                    });
+                }
+            });
+        });
+    </script>
+</body>
+</html> 
+```
+
+---
+
+## templates/dashboard.html
+```
