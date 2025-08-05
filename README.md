@@ -11,7 +11,7 @@ Tech Stack
 
 Installation
 
-Project Structure
+Project Structure :
 
 Usage
 
@@ -78,25 +78,16 @@ bash
 Copy
 Edit
 python f1_web_app.py
-# Open http://localhost:5000
+# Open : https://claude.ai/public/artifacts/fa87d8f6-7443-4405-9088-91bfc3c04391
 Option 2: Streamlit Dashboard
 bash
 Copy
 Edit
 python run_dashboard.py
-# Choose Option 1
-# Opens at http://localhost:8501
-Option 3: Dash Dashboard
-bash
-Copy
-Edit
-python run_dashboard.py
-# Choose Option 2
-# Opens at http://localhost:8050
+
+
 📁 Project Structure
-graphql
-Copy
-Edit
+
 f1-predictive-analytics/
 │
 ├── f1_web_app.py             # Flask application
@@ -121,19 +112,12 @@ GET	/api/nationality_analysis	Nationality-based scatter plot
 GET	/api/correlation_matrix	Correlation heatmap
 GET	/api/performance_clustering	Performance-based cluster plot
 
-🖼️ Dashboard Screenshots
-Include screenshots here (upload images to GitHub or use direct links)
 
 🌱 Future Enhancements
 📱 Mobile app version (React Native or Flutter)
-
 📈 Real-time race data and telemetry integration
-
 🧠 Deep learning models and time series predictions
-
 💬 Sentiment analysis using NLP
-
-👥 User accounts and personalized dashboards
 
 👥 Contributors
 TEAM AI
